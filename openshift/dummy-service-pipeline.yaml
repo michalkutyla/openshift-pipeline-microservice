@@ -1,0 +1,121 @@
+apiVersion: v1
+kind: Template
+labels:
+  app: dummy-service
+  template: dummy-service-pipeline
+metadata:
+  name: dummy-service-pipeline
+objects:
+- apiVersion: v1
+  kind: BuildConfig
+  metadata:
+    labels:
+      app: dummy-service
+      build: ${PIPELINE_NAME}
+    name: ${PIPELINE_NAME}
+    annotations:
+      pipeline.alpha.openshift.io/uses: '[{"name": "jenkins", "namespace": "", "kind": "DeploymentConfig"}]'
+  spec:
+    runPolicy: Serial
+    strategy:
+      jenkinsPipelineStrategy:
+        jenkinsfile: |-
+          node ('maven') {
+            def mvnCmd = "mvn --settings .mvn/settings.xml"
+            stage 'Checkout Acceptance tests'
+            git branch: "master", url: "https://github.com/michalkutyla/openshift-pipelines-dummy-service-tests.git"
+
+            stage 'Build'
+            openshiftBuild(buildConfig: 'dummy-service', namespace: '${DEV_PROJECT}', showBuildLogs: 'true')
+            openshiftVerifyBuild(buildConfig: 'dummy-service', namespace: '${DEV_PROJECT}', waitTime: 900000)
+
+            stage 'Deploy to DEV'
+            openshiftDeploy(deploymentConfig: 'dummy-service', namespace: '${DEV_PROJECT}')
+            openshiftVerifyDeployment(deploymentConfig: "dummy-service", replicaCount: 1, verifyReplicaCount: true, namespace: '${DEV_PROJECT}')
+
+            stage 'Run Tests in DEV'
+            sh "${mvnCmd} test -Ddummy.base.url=http://dummy-service.development.svc"
+
+            stage 'Deploy to TEST'
+            openshiftTag(sourceStream: 'dummy-service', sourceTag: 'latest', namespace: '${DEV_PROJECT}', destinationStream: 'dummy-service', destinationTag: 'latest', destinationNamespace: '${TEST_PROJECT}')
+            openshiftDeploy(deploymentConfig: 'dummy-service', namespace: '${TEST_PROJECT}')
+            openshiftVerifyDeployment(deploymentConfig: "dummy-service", replicaCount: 1, verifyReplicaCount: true, namespace: '${TEST_PROJECT}')
+            
+            stage 'Run Tests in TEST'            
+            sh "${mvnCmd} test -Ddummy.base.url=http://dummy-service.test.svc"
+
+            def tag="blue"
+            def altTag="green"
+
+            stage 'Deploy to PROD (Not Live)'
+            sh "oc get route dummy-service -n ${PROD_PROJECT} -o jsonpath='{ .spec.to.name }' > activeservice"
+            activeService = readFile('activeservice').trim()
+            if (activeService == "dummy-service-blue") {
+              tag = "green"
+              altTag = "blue"
+            }
+            openshiftTag(sourceStream: 'dummy-service', sourceTag: 'latest', namespace: '${TEST_PROJECT}', destinationStream: 'dummy-service', destinationTag: "prod-${tag}", destinationNamespace: '${PROD_PROJECT}')
+            openshiftDeploy(deploymentConfig: "dummy-service-${tag}", namespace: '${PROD_PROJECT}')
+            openshiftVerifyDeployment(deploymentConfig: "dummy-service-${tag}", replicaCount: 1, verifyReplicaCount: true, namespace: '${PROD_PROJECT}')
+
+            stage 'Smoke Tests in PROD (Not Live)'              
+            sh "${mvnCmd} test -Ddummy.base.url=http://dummy-service-${tag}.prod.svc"
+
+            stage 'Approve Go Live'
+            timeout(time:30, unit:'MINUTES') {
+              input message:'Go Live in Production (switch to new version)?'
+            }
+
+            
+            stage 'Go Live'
+            sh "oc set route-backends dummy-service dummy-service-${tag}=100 dummy-service-${altTag}=0 -n ${PROD_PROJECT}"
+            sh "oc set route-backends dummy-service-notlive dummy-service-${altTag}=100 dummy-service-${tag}=0 -n ${PROD_PROJECT}"
+            sh "oc label svc dummy-service-${altTag} app=dummy-service-idle --overwrite -n ${PROD_PROJECT}"
+            sh "oc label svc dummy-service-${tag} app=dummy-service-live --overwrite -n ${PROD_PROJECT}"
+            sleep 5
+            
+          }
+         
+      type: JenkinsPipeline
+    triggers:
+    - github:
+        secret: ${GITHUB_WEBHOOK_SECRET}
+      type: GitHub
+    - generic:
+        secret: ${GENERIC_WEBHOOK_SECRET}
+      type: Generic
+parameters:
+- description: The name for the pipeline.
+  displayName: Pipeline Name
+  name: PIPELINE_NAME
+  required: true
+  value: dummy-service-pipeline
+- description: DEV project name containting the buildconfigs
+  displayName: DEV Project Name
+  name: DEV_PROJECT
+  required: true
+  value: development
+- description: TEST project name containting the buildconfigs
+  displayName: TEST Project Name
+  name: TEST_PROJECT
+  required: true
+  value: test
+- description: PROD project name containting the buildconfigs
+  displayName: PROD Project Name
+  name: PROD_PROJECT
+  required: true
+  value: prod
+- description: GitHub webhook secret
+  displayName: GitHub Webhook Secret
+  from: '[a-zA-Z0-9]{8}'
+  generate: expression
+  name: GITHUB_WEBHOOK_SECRET
+  required: true
+  value: buildsecret
+- description: Generic webhook secret
+  displayName: Generic Webhook Secret
+  from: '[a-zA-Z0-9]{8}'
+  generate: expression
+  name: GENERIC_WEBHOOK_SECRET
+  required: true
+  value: buildsecret

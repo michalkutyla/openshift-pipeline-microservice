@@ -1,0 +1,74 @@
+apiVersion: v1
+kind: Template
+labels:
+  app: dummy-service
+metadata:
+  annotations:
+    description: dummy-service build configuration
+    iconClass: icon-java
+    tags: microservice,spring
+  name: dummy-service-build
+objects:
+
+# dummy-service Service
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    name: dummy-service
+  spec:
+    tags:
+    - name: latest
+- apiVersion: v1
+  kind: BuildConfig
+  metadata:
+    name: dummy-service
+  spec:
+    output:
+      to:
+        kind: ImageStreamTag
+        name: dummy-service:latest
+    source:
+      git:
+        ref: ${GIT_REF}
+        uri: ${GIT_URI}
+      sourceSecret:
+        name: ${GIT_SECRET}
+      type: Git
+    strategy:
+      sourceStrategy:
+        env:
+        - name: MAVEN_MIRROR_URL
+          value: ${MAVEN_MIRROR_URL}
+        forcePull: false
+        from:
+          kind: DockerImage
+          name: 'fabric8/s2i-java:2.0'
+        incremental: true
+      type: Source
+    resources:
+      limits:
+        cpu: 1
+        memory: "2Gi"
+      requests:
+        cpu: "200m"
+        memory: "1Gi"
+parameters:
+- description: Git source URI for application
+  displayName: Git source repository
+  name: GIT_URI
+  required: true
+  value: https://github.com/michalkutyla/openshift-pipelines-dummy-service.git
+- description: Git branch/tag reference
+  displayName: Git branch/tag reference
+  name: GIT_REF
+  required: true
+  value: master
+- description: Git secret
+  displayName: Git secret
+  name: GIT_SECRET
+  required: true
+  value: buildsecret
+- description: Maven mirror url. If nexus is deployed locally, use nexus url (e.g. http://nexus.ci:8081/content/groups/public/)
+  displayName: Maven mirror url
+  name: MAVEN_MIRROR_URL
+  value: 
